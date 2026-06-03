@@ -258,13 +258,6 @@
                                 safeWorkerSend(worker, { type: "destroy" });
                             }
                             session.workers = [];
-
-                            if (session.scanWorkers) {
-                                for (const worker of session.scanWorkers) {
-                                    safeWorkerSend(worker, { type: "destroy" });
-                                }
-                                session.scanWorkers = [];
-                            }
                         }
 
                         break;
