@@ -28,6 +28,10 @@
   let botId = 0;
   let target = {
     tank: 'basic',
+    x: null,         // null = no leader coord received yet → bot idles at spawn
+    y: null,         // set by heartbeat "A" packet from controller
+    mouseX: 0,
+    mouseY: 0,
     followMouse: true,
     feed: false,
     shift: false,
@@ -1146,7 +1150,8 @@
           }
         }
       }
-      let position = [0, 0, 5], died = false, died2 = false, ignore = false, disconnected = false, connected = false, upgrade = false, reconnectCount = 0, isUpgrading = false;
+      let position = [0, 0, 5], died = false, died2 = false, ignore = false, disconnected = false, connected = false, upgrade = false, isUpgrading = false;
+      let reconnectCount = config.currentReconnectCount || 0;
 
       let innerWidth = global.window.innerWidth = 500
       let innerHeight = global.window.innerHeight = 500
@@ -1205,14 +1210,15 @@
                 disconnected = true
                 destroy()
                 log('[arras]', a[0])
-              } else if (a[0].startsWith('The connection closed due to ')) {
+              } else if (a[0].startsWith('The connection closed due to ') || a[0].includes('kicked') || a[0].includes('disconnected')) {
                 disconnected = true
                 if (!destroyed) {
-                  destroy()
                   if (connected) {
                     if (reconnectCount < config.reconnectAttempts) {
                       reconnectCount++;
-                      log(`Attempting to reconnect in ${config.reconnectDelay / 1000}s... (${reconnectCount}/${config.reconnectAttempts})`);
+                      config.currentReconnectCount = reconnectCount;
+                      log(`[fillText] Attempting to reconnect in ${config.reconnectDelay / 1000}s... (${reconnectCount}/${config.reconnectAttempts})`);
+                      destroy()
                       global.setTimeout(function () {
                         log('Reconnecting...');
                         run(x, config, arras);
@@ -1506,11 +1512,11 @@
 
         for (const key of tanks[target.tank].path) {
           if (key === "wait") {
-            await waitTime(1000);
+            await waitTime(300);
           } else if (key instanceof Array) {
-            await waitTime(500);
+            await waitTime(100);
             await controller.click(upgrade_map[key[0]], upgrade_map[key[1]]);
-            await waitTime(500);
+            await waitTime(100);
           } else {
             controller.press("Key" + key.toUpperCase());
           }
@@ -1553,7 +1559,9 @@
           if (typeof process !== 'undefined' && process && typeof process.send === 'function') {
             process.send({ type: 'joined', botId: config && config.id ? config.id : null });
           }
-        } catch (e) { }
+        } catch (e) {
+          // EPIPE / IPC closed — codespace may have recycled, ignore gracefully
+        }
 
         if (target.autofire) {
           controller.press("KeyE");
@@ -1645,20 +1653,12 @@
             // If the tank uses coordinate clicks, delay slightly to ensure UI is ready
             const path = tanks[target.tank].path;
             if (Array.isArray(path) && path.some(key => Array.isArray(key))) {
-              setTimeout(onJoin, 1200);
+              setTimeout(onJoin, 400); // Faster: was 1200ms
             } else {
               onJoin();
             }
           }
           if (inGame && config.type === 'follow') {
-            // if (i % 35 === 34) {
-            //   controller.chat("7".repeat(randint(1, 60)))
-            // }
-
-            // if (Math.random() < 0.002) {
-            //   controller.chat("#PRAISETHEPRIMORDIALNOOB");
-            // }
-
             let moveTarget = { x: 0, y: 0 };
             let aimTarget = { x: 0, y: 0 };
             let valid = false;
@@ -1668,25 +1668,26 @@
               moveTarget.y = aimTarget.y = target.manualY;
               valid = true;
             } else if (target.x !== undefined && target.x !== null) {
-              // Base targets
+              // Leader coordinate handshake received — move toward leader
               moveTarget.x = target.x;
               moveTarget.y = target.y;
               aimTarget.x = target.x + target.mouseX;
               aimTarget.y = target.y + target.mouseY;
 
               if (target.followMouse) {
-                // If following mouse, movement target matches aiming target
                 moveTarget.x = aimTarget.x;
                 moveTarget.y = aimTarget.y;
               }
               valid = true;
             }
+            // If target.x is still null, bot has NOT received leader coords yet
+            // → stay completely still at spawn, no random movement
 
             if (valid) {
               if (position[2] > 0) {
                 pathfind(moveTarget.x, moveTarget.y);
               } else {
-                stopMoving(); // Stay still if we can't see our own coordinates
+                stopMoving(); // Can't see own coords yet
               }
 
               let angle;
@@ -1704,6 +1705,9 @@
               controller.x = (innerWidth / 2) + Math.cos(angle) * 200;
               controller.y = (innerHeight / 2) + Math.sin(angle) * 200;
               trigger.mousemove(controller.x, controller.y);
+            } else {
+              // No leader coords yet — idle at spawn
+              stopMoving();
             }
 
             /*if (Math.random() < 0.01) {
@@ -1743,11 +1747,11 @@
           }
           if (died) {
             inGame = false;
-            //log('Death detected. Clearing render cache...')
             stopMoving();
             block = true
             ignore = true
             let index = 0
+            // Faster render cache clear: 1 iteration at 10ms instead of 2 at 30ms
             let interval = setInterval(function () {
               if (destroyed) {
                 clearInterval(interval)
@@ -1758,34 +1762,32 @@
                 innerWidth = global.window.innerWidth = r
                 innerHeight = global.window.innerHeight = q
                 devicePixelRatio = global.window.devicePixelRatio = p
-                global.performance.time += 9000
+                global.performance.time += 12000
                 a()
               }
               index++
-              if (index >= 2) {
+              if (index >= 1) { // Was 2, now 1 — single pass is sufficient
                 clearInterval(interval)
                 end()
               }
-            }, 30), end = function () {
+            }, 10), end = function () { // Was 30ms, now 10ms
               innerWidth = global.window.innerWidth = 500
               innerHeight = global.window.innerHeight = 500
               devicePixelRatio = global.window.devicePixelRatio = 1
               if (config.autoRespawn) {
-                //log('Render cache cleared, respawning...')
                 died2 = true;
+                // Fast respawn retry: 800ms instead of 4000ms
                 const interv = setInterval(() => {
                   controller.press('Enter')
                   controller.press('Escape')
                   if (!died2) {
                     clearInterval(interv);
                   }
-                }, 4000);
-              } else {
-                //log('Render cache cleared.')
+                }, 800);
               }
               block = false
               ignore = false
-              global.performance.time += 9000
+              global.performance.time += 12000
               a()
               if (statusRecieved) { i++ }
             }
@@ -2033,11 +2035,22 @@
       }
         } else if (message.type == 'respawn') {
       if (currentBotInterface.respawn) currentBotInterface.respawn();
+    } else if (message.type == 'force_respawn') {
+      // Force respawn: clean destroy + exit so server can re-fork us
+      devastate();
+      process.exit(0);
     } else if (message.type == 'destroy') {
-      console.log("why devastatee");
       devastate();
       process.exit();
     }
+  });
+
+  // Codespace resilience: if the parent IPC channel breaks (EPIPE/disconnect),
+  // clean up and exit gracefully instead of crashing
+  process.on('disconnect', () => {
+    console.log('[worker] IPC channel disconnected, cleaning up...');
+    devastate();
+    process.exit(0);
   });
 
 })();
